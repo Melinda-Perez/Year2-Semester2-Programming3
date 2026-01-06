@@ -1,0 +1,96 @@
+{-# LANGUAGE TupleSections #-}
+
+module BoundedLang
+  ( boundedLang
+  , LRegExp(..)
+  , RegExp(..)
+  , SRegExp(..)
+  ) where
+
+import qualified Data.Set as S
+import qualified Data.Map.Strict as M
+import Data.List (sort)
+
+data LRegExp =  Let [(Int,RegExp)] RegExp 
+  deriving (Eq,Show,Read)
+
+data RegExp = S SRegExp | Star SRegExp  | Plus SRegExp | Seq [RegExp] 
+  deriving (Eq,Show,Read)
+
+data SRegExp =  Empty | Lit Char | Opt Char | Any | OptAny | SSeq [SRegExp] | Choice [SRegExp] | Var Int 
+  deriving (Eq,Show,Read)
+
+boundedLang :: Int -> LRegExp -> [String]
+boundedLang k (Let bindings mainExp) =
+  let env = M.fromList bindings
+      lang = langRegExp k env mainExp
+  in sort (S.toList lang)
+
+-- RegExp level language
+langRegExp :: Int -> M.Map Int RegExp -> RegExp -> S.Set String
+langRegExp k env re =
+  case re of
+    S s          -> langS k env s
+    Star s       -> kleeneStar k (langS k env s)
+    Plus s       -> kleenePlus k (langS k env s)
+    Seq res      -> seqLang k (map (langRegExp k env) res)
+
+-- SRegExp level language
+langS :: Int -> M.Map Int RegExp -> SRegExp -> S.Set String
+langS k env se =
+  case se of
+    Empty        -> S.singleton ""
+    Lit c        -> if k >= 1 then S.singleton [c] else S.empty
+    Opt c        -> pruneLE k (S.fromList ["", [c]])
+    Any          -> if k >= 1 then S.singleton "." else S.empty
+    OptAny       -> pruneLE k (S.fromList ["", "."])
+    SSeq xs      -> sseqLang k (map (langS k env) xs)
+    Choice alts  -> S.unions (map (langS k env) alts)
+    Var n        -> case M.lookup n env of
+                      Nothing  -> S.empty
+                      Just re' -> langRegExp k env re'
+
+-- Concatenation with pruning at RegExp level: product across components
+seqLang :: Int -> [S.Set String] -> S.Set String
+seqLang k sets = foldl (concatPrune k) (S.singleton "") sets
+
+-- Concatenation with pruning at SRegExp level: product across components
+sseqLang :: Int -> [S.Set String] -> S.Set String
+sseqLang = seqLang
+
+-- Concatenate two languages with pruning
+concatPrune :: Int -> S.Set String -> S.Set String -> S.Set String
+concatPrune k a b =
+  S.fromList
+    [ x ++ y
+    | x <- S.toList a
+    , y <- S.toList b
+    , length x + length y <= k
+    ]
+
+-- Simple pruning helper: drop strings longer than k
+pruneLE :: Int -> S.Set String -> S.Set String
+pruneLE k = S.filter (\s -> length s <= k)
+
+-- Kleene star over a base language (strings), avoiding epsilon-loops
+kleeneStar :: Int -> S.Set String -> S.Set String
+kleeneStar k base =
+  let nonEmpty = S.filter (not . null) base
+      step acc =
+        let new = (pruneLE k (concatPrune k acc nonEmpty)) S.\\ acc
+        in if S.null new then acc else step (acc `S.union` new)
+  in if S.null nonEmpty
+       then S.singleton ""          -- base is only epsilon
+       else step (S.singleton "")   -- include epsilon for star
+
+-- Kleene plus: at least one repetition
+kleenePlus :: Int -> S.Set String -> S.Set String
+kleenePlus k base =
+  let nonEmpty = S.filter (not . null) base
+      first    = pruneLE k base
+      step acc =
+        let new = (pruneLE k (concatPrune k acc nonEmpty)) S.\\ acc
+        in if S.null new then acc else step (acc `S.union` new)
+  in if S.null nonEmpty
+       then first                     -- base only epsilon -> plus accepts epsilon
+       else step first
