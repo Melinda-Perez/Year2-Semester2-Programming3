@@ -16,11 +16,12 @@ data SRegExp =  Empty | Lit Char | Opt Char | Any | OptAny | SSeq [SRegExp] | Ch
 unparseRegExp :: LRegExp -> String
 unparseRegExp (Let [] re)          = renderRegTop (normR re)
 unparseRegExp (Let bindings re)    =
-  let go []     acc = acc
+  let revBindings = reverse bindings
+      go []     acc = acc
       go ((n,r):bs) acc =
         let rhs = renderRegTop (normR r)
         in go bs ("let x" ++ show n ++ " = " ++ rhs ++ " in " ++ acc)
-  in go bindings (renderRegTop (normR re))
+  in go revBindings (renderRegTop (normR re))
 
 -- =========================
 -- Normalization (flattening and cleanup)
@@ -123,11 +124,13 @@ renderRegTop (Plus s) = renderUnit s ++ "+"
 
 -- Render a RegExp item inside a concatenation context (must be unit-safe).
 renderRegItem :: RegExp -> String
-renderRegItem (S s)    = renderUnit s
+renderRegItem (S s) =
+  case s of
+    SSeq xs | length xs > 1 -> concatMap renderUnit xs
+    _                       -> renderUnit s
 renderRegItem (Star s) = renderUnit s ++ "*"
 renderRegItem (Plus s) = renderUnit s ++ "+"
 renderRegItem (Seq rs) =
-  -- If a nested Seq appears, treat as concatenation of unit items
   case rs of
     []  -> renderUnit Empty
     [r] -> renderRegItem r
@@ -150,7 +153,7 @@ renderSRoot (Choice xs)  = intercalate "|" (map renderAlt xs)
 -- Each alternative is rendered as a sequence of unit items (or 'e').
 renderAlt :: SRegExp -> String
 renderAlt Empty      = "e"
-renderAlt (SSeq xs)  = concatMap renderUnit xs
+renderAlt (SSeq xs)  = concatMap renderUnit xs  -- never parenthesize here
 renderAlt s          = renderUnit s
 
 -- Render a SRegExp as a UnitRegExp string.
@@ -166,5 +169,5 @@ renderUnit (SSeq xs) =
   case xs of
     []   -> "e"
     [y]  -> renderUnit y
-    _    -> "(" ++ renderSRoot (SSeq xs) ++ ")"
+    _    -> "(" ++ concatMap renderUnit xs ++ ")" -- single set of parens only here
 renderUnit (Choice xs)  = "(" ++ renderSRoot (Choice xs) ++ ")"
