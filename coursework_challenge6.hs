@@ -1,8 +1,13 @@
 -- Lambda calculus with exceptions and exception handling.
 -- Provides: countReductions :: Int -> Exp -> (Int,Int)
 
-data Exp = Var Int | Abs Int Exp | App Exp Exp | Exn | Catch Exp Exp
-  deriving (Eq,Show,Read)
+data Exp 
+  = Var Int 
+  | Abs Int Exp 
+  | App Exp Exp 
+  | Exn 
+  | Catch Exp Exp
+  deriving (Eq, Show, Read)
 
 -- Public API: number of small-step reductions until normal form (bounded)
 countReductions :: Int -> Exp -> (Int,Int)
@@ -11,7 +16,7 @@ countReductions bound e =
   , min bound (steps stepCBN e)
   )
 
--- Iterate a small-step function until it returns Nothing
+-- Reduces until no rule applies (stuck terms are considered normal forms!)
 steps :: (Exp -> Maybe Exp) -> Exp -> Int
 steps step0 = go 0
   where
@@ -26,41 +31,37 @@ stepCBV :: Exp -> Maybe Exp
 stepCBV (Abs _ _) = Nothing
 stepCBV Exn       = Nothing
 stepCBV (Var _)   = Nothing
-
--- catch e1 e2
 stepCBV (Catch e1 e2) =
   case stepCBV e1 of
-    Just e1' -> Just (Catch e1' e2)          -- evaluate handler first
-    Nothing  ->
+    Just e1' -> Just (Catch e1' e2)
+    Nothing  -> 
       case stepCBV e2 of
-        Just e2' -> Just (Catch e1 e2')      -- then evaluate argument
+        Just e2' -> Just (Catch e1 e2')
         Nothing  ->
           case e2 of
-            Exn      -> Just e1              -- catch e exn  ---> e
-            Abs _ _  -> Just e2              -- catch e (lambda) ---> lambda
+            Exn      -> Just e1
+            Abs _ _  -> Just e2
             _        -> Nothing
-
--- application
+-- propagate exn IMMEDIATELY
+stepCBV (App e1 e2)
+  | isExn e1  = Just Exn
+  | isExn e2  = Just Exn
 stepCBV (App e1 e2) =
   case stepCBV e1 of
-    Just e1' -> Just (App e1' e2)            -- evaluate function first
+    Just e1' -> Just (App e1' e2)
     Nothing  ->
       case e1 of
-        Exn       -> Just Exn                -- exn e  ---> exn
         Abs x b   ->
-          case stepCBV e2 of
-            Just e2' -> Just (App e1 e2')    -- then evaluate argument
-            Nothing  ->
-              case e2 of
-                Exn      -> Just Exn         -- e exn ---> exn
-                _        -> Just (subst x e2 b)  -- beta (argument is a value)
-        _         ->
           case stepCBV e2 of
             Just e2' -> Just (App e1 e2')
             Nothing  ->
               case e2 of
-                Exn -> Just Exn
-                _   -> Nothing
+                Exn      -> Just Exn
+                _        -> Just (subst x e2 b)
+        _         ->
+          case stepCBV e2 of
+            Just e2' -> Just (App e1 e2')
+            Nothing  -> Nothing
 
 -- =========================
 -- Call-By-Name small-step
@@ -69,8 +70,6 @@ stepCBN :: Exp -> Maybe Exp
 stepCBN (Abs _ _) = Nothing
 stepCBN Exn       = Nothing
 stepCBN (Var _)   = Nothing
-
--- catch e1 e2
 stepCBN (Catch e1 e2) =
   case stepCBN e1 of
     Just e1' -> Just (Catch e1' e2)
@@ -81,19 +80,20 @@ stepCBN (Catch e1 e2) =
         _        -> case stepCBN e2 of
                       Just e2' -> Just (Catch e1 e2')
                       Nothing  -> Nothing
-
--- application (leftmost outermost)
 stepCBN (App e1 e2)
-  | isExn e1          = Just Exn                 -- exn e ---> exn
-  | isExn e2          = Just Exn                 -- e exn ---> exn
-  | isAbs e1          = let Abs x b = e1
-                        in Just (subst x e2 b)    -- beta; do NOT evaluate e2 first
-  | otherwise         =
+  | isExn e1  = Just Exn
+  | isExn e2  = Just Exn
+stepCBN (App e1 e2)
+  | isAbs e1 = case e1 of
+      Abs x b -> Just (subst x e2 b)
+      _       -> error "Impossible: non-Abs matched in stepCBN"
+  | otherwise =
       case stepCBN e1 of
         Just e1' -> Just (App e1' e2)
-        Nothing  -> case stepCBN e2 of
-                      Just e2' -> Just (App e1 e2')
-                      Nothing  -> Nothing
+        Nothing  ->
+          case stepCBN e2 of
+            Just e2' -> Just (App e1 e2')
+            Nothing  -> Nothing
 
 -- =========================
 -- Helpers
