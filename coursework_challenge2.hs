@@ -260,16 +260,3 @@ normalizeSChoice xs =
 isEmptyS :: SRegExp -> Bool
 isEmptyS Empty = True
 isEmptyS _     = False
-
-Perfect — this is a clean and complete parser for your simplified regular expressions, and it already incorporates normalization and correct handling of ?, sequences, choices, and nested lets.
-
-The only adjustments I’d suggest to make it fully aligned with your failing test cases from tests2 are:
-
-1️⃣ Disallow * and + over choices or variables
-
-Currently, pRegPrimary allows * or + on any SRegExp, including Choice or Var, which causes A|B* or A|x1+ to incorrectly succeed.
-
-We can fix it by restricting */+ to units only that are not choices:
-
-pRegPrimary :: Parser RegExp
-pRegPrimary =
