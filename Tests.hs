@@ -4,6 +4,22 @@ module Main where
 
 import System.Exit (exitSuccess, exitFailure)
 
+#ifdef CHALLENGE1
+#include "coursework_challenge1"
+#endif
+
+#ifdef CHALLENGE2
+#include "coursework_challenge2"
+#endif
+
+#ifdef CHALLENGE3
+#include "coursework_challenge3"
+#endif
+
+#ifdef CHALLENGE6
+#include "coursework_challenge6"
+#endif
+
 -- A tiny assertion helper
 assertEq :: (Eq a, Show a) => String -> a -> a -> IO Int
 assertEq name expected actual =
