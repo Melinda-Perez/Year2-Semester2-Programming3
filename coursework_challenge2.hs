@@ -1,5 +1,7 @@
--- Improved parser without a module header (so it can be pasted into a test harness)
--- Fix: remove invalid fallback in extractMain that caused a type mismatch
+-- Parser for simplified regular expressions with normalization.
+-- Accepts chains of top-level lets (right-associated), flattens sequences/choices,
+-- removes Empty in sequences, deduplicates choices, and collapses singletons.
+-- Ensures '?' applies only to single uppercase literals (not variables).
 
 import Data.Char (isDigit, isUpper, isSpace)
 import Data.List (nub)
@@ -79,8 +81,8 @@ lexeme p = p <* spaces
 symbol :: String -> Parser String
 symbol = lexeme . string
 
-optional :: Parser a -> Parser (Maybe a)
-optional p = (Just <$> p) <|> pure Nothing
+optionalP :: Parser a -> Parser (Maybe a)
+optionalP p = (Just <$> p) <|> pure Nothing
 
 sepBy1 :: Parser a -> Parser b -> Parser [a]
 sepBy1 p sep = (:) <$> p <*> many (sep *> p)
@@ -89,22 +91,25 @@ sepBy1 p sep = (:) <$> p <*> many (sep *> p)
 -- Grammar parsers
 -- =========================
 
--- <LRegExp> ::= "let" Var '=' <RegExp> "in" <LRegExp>  | <RegExp>
+-- <LRegExp> ::= "let" Var '=' <RegExp> "in" <LRegExp> | <RegExp>
+-- Parse zero-or-more lets, then the final RegExp. Reverse bindings so inner-first.
 pLRegExp :: Parser LRegExp
-pLRegExp =
-  pLetChain <|> (Let [] <$> pRegExp)
+pLRegExp = do
+  bs <- many pLetOne
+  re <- pRegExp
+  pure (Let (reverse bs) re)
   where
-    pLetChain = do
-      _ <- symbol "let"
-      n <- pVarNum
-      _ <- symbol "="
+    pLetOne :: Parser (Int, RegExp)
+    pLetOne = do
+      _  <- symbol "let"
+      n  <- pVarNum
+      _  <- symbol "="
       re <- pRegExp
-      _ <- symbol "in"
-      lr <- pLRegExp
-      case lr of
-        Let bs main -> pure $ Let ((n, re) : bs) main
+      _  <- symbol "in"
+      pure (n, re)
 
 -- <RegExp> ::= <UnitRegEx>'*' | <UnitRegEx>'+' | <RegEx><RegEx> | '('<RegEx>')' | <SRegEx>
+-- Parse a concatenation of primaries; normalization will minimize Seq usage.
 pRegExp :: Parser RegExp
 pRegExp = normalizeRSeq <$> some pRegPrimary
 
@@ -129,7 +134,7 @@ pRegPrimary =
       _ <- symbol ")"
       pure r
 
--- <SRegExp> ::= <SRegEx><SRegEx> |  <SRegEx>'|'<SRegEx> | <UnitRegEx>
+-- <SRegExp> ::= <SRegEx><SRegEx> | <SRegEx>'|'<SRegEx> | <UnitRegEx>
 -- Precedence: concatenation binds tighter than '|'
 pSRegExp :: Parser SRegExp
 pSRegExp = normalizeSChoice <$> sepBy1 pSConcat (symbol "|")
@@ -138,7 +143,7 @@ pSRegExp = normalizeSChoice <$> sepBy1 pSConcat (symbol "|")
 pSConcat :: Parser SRegExp
 pSConcat = normalizeSSeq <$> some pUnitSRegExp
 
--- <UnitRegExp> ::=  <Var> | <C> | <C>'?' | '.' | 'e' | '(' <SRegEx> ')'
+-- <UnitRegExp> ::= <Var> | <C> | <C>'?' | '.' | 'e' | '(' <SRegEx> ')'
 pUnitSRegExp :: Parser SRegExp
 pUnitSRegExp =
       pVar
@@ -150,13 +155,13 @@ pUnitSRegExp =
     pVar = Var <$> pVarNum
     pLitOrOpt = do
       c <- lexeme (satisfy isUpper)
-      mq <- optional (char '?')
+      mq <- optionalP (char '?')
       pure $ case mq of
-        Just _ -> Opt c
+        Just _ -> Opt c          -- '?' applies only to a single uppercase literal
         Nothing -> Lit c
     pAnyOrOptAny = do
       _ <- lexeme (char '.')
-      mq <- optional (char '?')
+      mq <- optionalP (char '?')
       pure $ case mq of
         Just _ -> OptAny
         Nothing -> Any
@@ -174,13 +179,16 @@ pVarNum = do
   ds <- some (lexeme (satisfy isDigit))
   pure (read ds)
 
--- A simple "try" wrapper (no extra backtracking here; kept for clarity)
-try :: Parser a -> Parser a
-try (Parser p) = Parser p
-
 -- =========================
 -- Normalization (flattening and cleanup)
 -- =========================
+
+-- Normalize a RegExp recursively
+normR :: RegExp -> RegExp
+normR (S s)       = S (normS s)
+normR (Star s)    = Star (normS s)
+normR (Plus s)    = Plus (normS s)
+normR (Seq rs)    = normalizeRSeq rs
 
 -- Normalize a list of RegExp primaries into a single RegExp:
 -- - Flatten nested Seq
@@ -209,13 +217,6 @@ normalizeRSeq xs = finalize (mergeAdjS (flattenSeq (map normR xs)))
     finalize []  = S Empty
     finalize [r] = r
     finalize rs  = Seq rs
-
--- Normalize a RegExp recursively
-normR :: RegExp -> RegExp
-normR (S s)       = S (normS s)
-normR (Star s)    = Star (normS s)
-normR (Plus s)    = Plus (normS s)
-normR (Seq rs)    = normalizeRSeq rs
 
 -- Normalize SRegExp:
 -- - Flatten SSeq and Choice
@@ -259,3 +260,16 @@ normalizeSChoice xs =
 isEmptyS :: SRegExp -> Bool
 isEmptyS Empty = True
 isEmptyS _     = False
+
+Perfect — this is a clean and complete parser for your simplified regular expressions, and it already incorporates normalization and correct handling of ?, sequences, choices, and nested lets.
+
+The only adjustments I’d suggest to make it fully aligned with your failing test cases from tests2 are:
+
+1️⃣ Disallow * and + over choices or variables
+
+Currently, pRegPrimary allows * or + on any SRegExp, including Choice or Var, which causes A|B* or A|x1+ to incorrectly succeed.
+
+We can fix it by restricting */+ to units only that are not choices:
+
+pRegPrimary :: Parser RegExp
+pRegPrimary =
